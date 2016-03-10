@@ -17,7 +17,7 @@ import pickle as pkl
 import random
 import h5py
 from multiprocessing import Pool
-from threading import Thread
+from threading import Thread,Lock
 import skimage.io
 import copy
 
@@ -27,6 +27,13 @@ test_frames = 16
 train_frames = 16
 test_buffer = 3
 train_buffer = 24
+
+global trainIdx
+global testIdx
+trainIdx=0
+testIdx=0
+
+lock=Lock()
 
 def processImageCrop(im_info, transformer, flow):
   im_path = im_info[0]
@@ -50,14 +57,15 @@ class ImageProcessorCrop(object):
     return processImageCrop(im_info, self.transformer, self.flow)
 
 class sequenceGeneratorVideo(object):
-  def __init__(self, buffer_size, clip_length, num_videos, video_dict, video_order):
+  def __init__(self, buffer_size, clip_length, num_videos, video_dict, video_order,train_or_test):
     self.buffer_size = buffer_size
     self.clip_length = clip_length
     self.N = self.buffer_size*self.clip_length
     self.num_videos = num_videos
     self.video_dict = video_dict
     self.video_order = video_order
-    self.idx = 0
+    #self.idx = 0
+    self.train_or_test = train_or_test
 
   def __call__(self):
     label_r = []
@@ -65,20 +73,34 @@ class sequenceGeneratorVideo(object):
     im_crop = []
     im_reshape = []  
     im_flip = []
- 
+
+
+    ##################################### 
+    '''
     if self.idx + self.buffer_size >= self.num_videos:
       idx_list = range(self.idx, self.num_videos)
       idx_list.extend(range(0, self.buffer_size-(self.num_videos-self.idx)))
     else:
       idx_list = range(self.idx, self.idx+self.buffer_size)
-    
+    '''
+    lock.acquire()
+    if cmp(self.train_or_test,"train"):
+       idx=trainIdx
+    else:
+       idx=testIdx
 
+    if idx + self.buffer_size >= self.num_videos:
+      idx_list = range(idx, self.num_videos)
+      idx_list.extend(range(0, self.buffer_size-(self.num_videos-idx)))
+    else:
+      idx_list = range(idx, idx+self.buffer_size)
+    #####################################
     for i in idx_list:
       key = self.video_order[i]
       label = self.video_dict[key]['label']
       video_reshape = self.video_dict[key]['reshape']
       video_crop = self.video_dict[key]['crop']
-      label_r.extend([label]*self.clip_length)  #clip_length=16. so 16 elements having same value=[label] will be added to label_r
+      label_r.extend([label]*self.clip_length)  
 
       im_reshape.extend([(video_reshape)]*self.clip_length)
       r0 = int(random.random()*(video_reshape[0] - video_crop[0]))
@@ -91,16 +113,27 @@ class sequenceGeneratorVideo(object):
 
       for i in range(rand_frame,rand_frame+self.clip_length):
         frames.append(self.video_dict[key]['frames'] %i)
-     
+
       im_paths.extend(frames) 
-    
-    
+
+
     im_info = zip(im_paths,im_crop, im_reshape, im_flip)
 
+    #####################################
+    '''
     self.idx += self.buffer_size
     if self.idx >= self.num_videos:
       self.idx = self.idx - self.num_videos
-
+    '''
+    idx += self.buffer_size
+    if idx >= self.num_videos:
+      idx = idx - self.num_videos
+    if cmp(self.train_or_test,"train"):
+       trainIdx= idx
+    else:
+       testIdx= idx
+    lock.release()
+    #####################################
     return label_r, im_info
   
 def advance_batch(result, sequence_generator, image_processor, pool):
@@ -131,7 +164,7 @@ class videoRead(caffe.Layer):
     self.buffer_size = test_buffer  #num videos processed per batch
     self.frames = test_frames   #length of processed clip
     self.N = self.buffer_size*self.frames
-    self.idx = 0
+    #self.idx = 0
     self.channels = 3
     self.height = 227
     self.width = 227
@@ -188,7 +221,8 @@ class videoRead(caffe.Layer):
     pool_size = 24
 
     self.image_processor = ImageProcessorCrop(self.transformer, self.flow)
-    self.sequence_generator = sequenceGeneratorVideo(self.buffer_size, self.frames, self.num_videos, self.video_dict, self.video_order)
+    #self.sequence_generator = sequenceGeneratorVideo(self.buffer_size, self.frames, self.num_videos, self.video_dict, self.video_order)
+    self.sequence_generator = sequenceGeneratorVideo(self.buffer_size, self.frames, self.num_videos, self.video_dict, self.video_order,self.train_or_test)
 
     self.pool = Pool(processes=pool_size)
     self.batch_advancer = BatchAdvancer(self.thread_result, self.sequence_generator, self.image_processor, self.pool)
@@ -260,7 +294,7 @@ class videoReadTrain_flow(videoRead):
     self.buffer_size = train_buffer  #num videos processed per batch
     self.frames = train_frames   #length of processed clip
     self.N = self.buffer_size*self.frames
-    self.idx = 0
+    #self.idx = 0
     self.channels = 3
     self.height = 227
     self.width = 227
@@ -275,7 +309,7 @@ class videoReadTest_flow(videoRead):
     self.buffer_size = test_buffer  #num videos processed per batch
     self.frames = test_frames   #length of processed clip
     self.N = self.buffer_size*self.frames
-    self.idx = 0
+    #self.idx = 0
     self.channels = 3
     self.height = 227
     self.width = 227
@@ -290,7 +324,7 @@ class videoReadTrain_RGB(videoRead):
     self.buffer_size = train_buffer  #num videos processed per batch
     self.frames = train_frames   #length of processed clip
     self.N = self.buffer_size*self.frames
-    self.idx = 0
+    #self.idx = 0
     self.channels = 3
     self.height = 227
     self.width = 227
@@ -305,7 +339,7 @@ class videoReadTest_RGB(videoRead):
     self.buffer_size = test_buffer  #num videos processed per batch
     self.frames = test_frames   #length of processed clip
     self.N = self.buffer_size*self.frames
-    self.idx = 0
+    #self.idx = 0
     self.channels = 3
     self.height = 227
     self.width = 227
